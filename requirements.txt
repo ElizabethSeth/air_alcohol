@@ -1,0 +1,24 @@
+# ============================================================
+# SRKES Airflow — Dépendances Python
+# ============================================================
+# Installation locale :
+#   pip install -r requirements.txt
+#
+# Pour Cloud Composer, ces packages sont déclarés dans
+# config/cloud_composer_config.yaml
+# ============================================================
+
+apache-airflow==2.9.2
+apache-airflow-providers-google==10.14.0
+apache-airflow-providers-http==4.10.0
+apache-airflow-providers-slack==8.7.1
+apache-airflow-providers-celery==3.7.1
+apache-airflow-providers-redis==3.7.1
+
+google-cloud-bigquery==3.21.0
+google-cloud-storage==2.16.0
+google-cloud-logging==3.10.0
+
+requests==2.31.0
+pandas==2.2.2
+openpyxl==3.1.2

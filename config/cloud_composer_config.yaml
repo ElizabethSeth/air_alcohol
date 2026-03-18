@@ -1,0 +1,89 @@
+# ============================================================
+# SRKES — Configuration Cloud Composer (GCP Managed Airflow)
+# ============================================================
+# Déploiement avec gcloud CLI :
+#
+#   gcloud composer environments create srkes-airflow \
+#     --location europe-west1 \
+#     --image-version composer-2.8.1-airflow-2.9.2 \
+#     --environment-size small \
+#     --service-account composer-sa@PROJECT.iam.gserviceaccount.com \
+#     --env-variables SRKES_GCS_BUCKET=srkes-raw-pdfs,SRKES_BQ_PROJECT=PROJECT_ID
+#
+# Upload des DAGs :
+#   gcloud composer environments storage dags import \
+#     --environment srkes-airflow \
+#     --location europe-west1 \
+#     --source dags/
+#
+# ============================================================
+
+composer:
+  environment_name: srkes-airflow
+  location: europe-west1
+  image_version: composer-2.8.1-airflow-2.9.2
+  environment_size: SMALL
+
+  node_config:
+    machine_type: n1-standard-2
+    disk_size_gb: 50
+
+  software_config:
+    python_version: "3.11"
+    pypi_packages:
+      apache-airflow-providers-slack: "==8.7.1"
+      google-cloud-bigquery: "==3.21.0"
+      google-cloud-storage: "==2.16.0"
+      requests: "==2.31.0"
+      pandas: "==2.2.2"
+      openpyxl: "==3.1.2"
+
+    airflow_config_overrides:
+      core-dags_are_paused_at_creation: "True"
+      core-load_examples: "False"
+      webserver-expose_config: "True"
+      scheduler-min_file_process_interval: "60"
+
+    env_variables:
+      SRKES_GCS_BUCKET: srkes-raw-pdfs
+      SRKES_BQ_PROJECT: your-gcp-project-id      # À remplacer
+      SRKES_BQ_DATASET: Reports
+      SRKES_COLLECTION_NAME: srkes_annual_reports
+      SRKES_API_HOST: your-fastapi-cloudrun-url   # À remplacer
+
+  # Connexions Airflow (à créer manuellement dans l'UI ou via gcloud)
+  connections:
+    - conn_id: google_cloud_default
+      conn_type: google_cloud_platform
+    - conn_id: srkes_fastapi
+      conn_type: http
+      host: your-fastapi-url
+      port: 443
+      schema: https
+    - conn_id: srkes_slack_webhook
+      conn_type: http
+      host: hooks.slack.com
+      schema: https
+
+  # IAM — Rôles nécessaires pour le Service Account Composer
+  iam_roles:
+    - roles/bigquery.dataEditor
+    - roles/bigquery.jobUser
+    - roles/storage.objectAdmin
+    - roles/logging.logWriter
+    - roles/monitoring.metricWriter
+
+# ─────────────────────────────────────────────
+# Déploiement des DAGs via CI/CD (GitLab)
+# ─────────────────────────────────────────────
+# Ajouter dans .gitlab-ci.yml :
+#
+# deploy_dags:
+#   stage: deploy
+#   script:
+#     - gcloud composer environments storage dags import
+#         --environment srkes-airflow
+#         --location europe-west1
+#         --source dags/
+#   only:
+#     - main

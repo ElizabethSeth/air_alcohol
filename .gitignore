@@ -1,0 +1,6 @@
+.env
+simple_auth_manager_passwords.json.generated
+{dags,plugins,config,tests,docs}
+logs
+plugins
+venv
