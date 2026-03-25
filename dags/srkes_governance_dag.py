@@ -17,10 +17,6 @@ Description du flux :
   7. Rapport de gouvernance hebdomadaire
 
 Planification : hebdomadaire, dimanche à 3h UTC
-
-Auteur  : Elly Sth
-Projet  : SR-KES — Data Engineer Certification Simplon
-Date    : 2026
 """
 from __future__ import annotations
 import logging
@@ -103,7 +99,6 @@ with DAG(
 
     gcs_inventory = inventory_gcs_raw_layer()
 
-    # ── 2. Inventaire BigQuery (C20) ──────────────────────────────────────
     @task(task_id="inventory_bigquery_dwh")
     def inventory_bigquery_dwh() -> dict:
         """Collecte les statistiques de toutes les tables BigQuery (C20)."""
@@ -128,29 +123,35 @@ with DAG(
 
     bq_catalog = inventory_bigquery_dwh()
 
-    # ── 3. Catalogue centralisé (C20) ─────────────────────────────────────
     @task(task_id="update_data_catalog")
     def update_data_catalog(gcs_inv: dict, bq_cat: dict) -> None:
-        """Consolide GCS + BigQuery dans un catalogue centralisé (C20)."""
+        """Consolide GCS + BigQuery dans un catalogue centralisé (C20).
+
+        Utilise load_table_from_json + WRITE_TRUNCATE au lieu de
+        DELETE + insert_rows_json pour éviter le conflit avec le
+        streaming buffer de BigQuery (erreur 400 à partir du 2e run).
+        """
         from google.cloud import bigquery
-        bq = bigquery.Client(project=BQ_PROJECT)
-        bq.query(f"""
-            CREATE TABLE IF NOT EXISTS `{BQ_PROJECT}.{BQ_DATASET}.data_catalog` (
-                catalog_id     STRING,
-                layer          STRING,
-                object_name    STRING,
-                object_type    STRING,
-                classification STRING,
-                row_count      INT64,
-                size_mb        FLOAT64,
-                schema_fields  INT64,
-                last_updated   TIMESTAMP,
-                description    STRING,
-                owner          STRING
-            )
-        """).result()
-        bq.query(f"DELETE FROM `{BQ_PROJECT}.{BQ_DATASET}.data_catalog` WHERE TRUE").result()
-        rows = []
+
+        bq         = bigquery.Client(project=BQ_PROJECT)
+        table_ref  = f"{BQ_PROJECT}.{BQ_DATASET}.data_catalog"
+        now_iso    = datetime.utcnow().isoformat()
+        schema = [
+            bigquery.SchemaField("catalog_id",     "STRING"),
+            bigquery.SchemaField("layer",           "STRING"),
+            bigquery.SchemaField("object_name",     "STRING"),
+            bigquery.SchemaField("object_type",     "STRING"),
+            bigquery.SchemaField("classification",  "STRING"),
+            bigquery.SchemaField("row_count",       "INT64"),
+            bigquery.SchemaField("size_mb",         "FLOAT64"),
+            bigquery.SchemaField("schema_fields",   "INT64"),
+            bigquery.SchemaField("last_updated",    "TIMESTAMP"),
+            bigquery.SchemaField("description",     "STRING"),
+            bigquery.SchemaField("owner",           "STRING"),
+        ]
+
+        rows: list[dict] = []
+
         for prefix, stats in gcs_inv.get("by_prefix", {}).items():
             rows.append({
                 "catalog_id"    : f"gcs_{prefix}",
@@ -161,10 +162,11 @@ with DAG(
                 "row_count"     : stats["count"],
                 "size_mb"       : stats["size_mb"],
                 "schema_fields" : 0,
-                "last_updated"  : datetime.utcnow().isoformat(),
+                "last_updated"  : now_iso,
                 "description"   : f"Dossier GCS — {prefix}",
                 "owner"         : "data_engineering_team",
             })
+
         for table in bq_cat.get("tables", []):
             rows.append({
                 "catalog_id"    : f"bq_{table['name']}",
@@ -175,19 +177,32 @@ with DAG(
                 "row_count"     : table["row_count"],
                 "size_mb"       : table["size_mb"],
                 "schema_fields" : table["schema_fields"],
-                "last_updated"  : table["modified"] or datetime.utcnow().isoformat(),
+                "last_updated"  : table["modified"] or now_iso,
                 "description"   : table["description"],
                 "owner"         : "data_engineering_team",
             })
-        if rows:
-            errors = bq.insert_rows_json(f"{BQ_PROJECT}.{BQ_DATASET}.data_catalog", rows)
-            if errors:
-                log.error("Catalogue errors : %s", errors)
-        log.info("Catalogue mis à jour : %d entrées", len(rows))
+
+        if not rows:
+            log.warning("Catalogue : aucune entrée à écrire, tâche ignorée.")
+            return
+
+        # ── Écriture atomique : WRITE_TRUNCATE remplace DELETE + streaming ─
+        # Pas de streaming buffer → pas d'erreur 400 au 2e run et suivants.
+        job_config = bigquery.LoadJobConfig(
+            schema=schema,
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        )
+
+        job = bq.load_table_from_json(rows, table_ref, job_config=job_config)
+        job.result()  # attend la fin du job et lève une exception si erreur
+
+        log.info(
+            "Catalogue mis à jour : %d entrées → %s (job %s)",
+            len(rows), table_ref, job.job_id,
+        )
 
     catalog_updated = update_data_catalog(gcs_inventory, bq_catalog)
 
-    # ── 4. Cycle de vie des données (C21) ─────────────────────────────────
     @task(task_id="apply_lifecycle_rules")
     def apply_lifecycle_rules() -> dict:
         """Supprime les objets GCS expirés selon les règles de rétention (C21)."""
@@ -211,7 +226,6 @@ with DAG(
 
     lifecycle_applied = apply_lifecycle_rules()
 
-    # ── 5. Conformité RGPD (C21) ──────────────────────────────────────────
     @task(task_id="check_rgpd_compliance")
     def check_rgpd_compliance() -> dict:
         """Vérifie la conformité RGPD du pipeline (C21)."""
@@ -234,7 +248,6 @@ with DAG(
 
     rgpd_checked = check_rgpd_compliance()
 
-    # ── 6. Rapport de gouvernance (C20, C21) ──────────────────────────────
     @task(task_id="generate_governance_report", trigger_rule=TriggerRule.ALL_DONE)
     def generate_governance_report(gcs_inv: dict, bq_cat: dict,
                                    lifecycle_result: dict, rgpd_result: dict) -> None:

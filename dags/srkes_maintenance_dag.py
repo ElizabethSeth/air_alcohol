@@ -86,7 +86,6 @@ with DAG(
 
     start = EmptyOperator(task_id="start")
 
-    # ── 1. Contrôle fraîcheur des données (C16) ───────────────────────────
     check_fiscal_year = BigQueryCheckOperator(
         task_id="check_fiscalyear_freshness",
         sql=f"""
@@ -106,7 +105,6 @@ with DAG(
         """,
         use_legacy_sql=False,
     )
-    # ── 2. Déduplication (C16) ────────────────────────────────────────────
     @task(task_id="detect_and_remove_duplicates")
     def detect_and_remove_duplicates() -> dict:
         """Détecte et supprime les doublons dans chaque table (C16)."""
@@ -130,7 +128,6 @@ with DAG(
 
     dedup_report = detect_and_remove_duplicates()
 
-    # ── 3. Snapshots BigQuery (C16 — sauvegarde) ──────────────────────────
     @task(task_id="create_dwh_snapshots")
     def create_dwh_snapshots() -> list[str]:
         """Crée des snapshots BigQuery pour chaque table (C16)."""
@@ -153,7 +150,6 @@ with DAG(
 
     snapshots = create_dwh_snapshots()
 
-    # ── 4. Détection SCD (C17) ────────────────────────────────────────────
     @task(task_id="detect_scd_changes")
     def detect_scd_changes() -> dict:
         """
@@ -190,7 +186,6 @@ with DAG(
 
     scd_changes = detect_scd_changes()
 
-    # ── 5. SCD Type 1 — mise à jour directe (C17) ─────────────────────────
     @task(task_id="apply_scd_type1")
     def apply_scd_type1(scd_result: dict) -> int:
         """
@@ -220,7 +215,6 @@ with DAG(
 
     scd_applied = apply_scd_type1(scd_changes)
 
-    # ── 6. SCD Type 2 — versionnement historique (C17) ────────────────────
     @task(task_id="apply_scd_type2_metadata")
     def apply_scd_type2_metadata() -> int:
         """
@@ -230,7 +224,6 @@ with DAG(
         from google.cloud import bigquery
         bq = bigquery.Client(project=BQ_PROJECT)
  
-        # Crée la table d'historique dans Reports
         bq.query(f"""
             CREATE TABLE IF NOT EXISTS
             `{BQ_PROJECT}.{BQ_DATASET}.dim_collection_history` (
@@ -252,7 +245,6 @@ with DAG(
             WHERE is_current = TRUE
         """).result()
  
-        # Insère les nouvelles versions depuis toutes les companies
         bq.query(f"""
             INSERT INTO `{BQ_PROJECT}.{BQ_DATASET}.dim_collection_history`
                 (collection_name, company, total_files, total_companies,
@@ -323,7 +315,6 @@ with DAG(
 
     maint_logged = log_maintenance_metrics(dedup_report, scd_changes, snapshots, scd_applied)
 
-    # ── 8. Notification (C16) ─────────────────────────────────────────────
     @task(task_id="notify_maintenance_done", trigger_rule=TriggerRule.ALL_DONE)
     def notify_maintenance_done(dedup_report: dict, scd_result: dict, scd1_applied: int) -> None:
         import requests
